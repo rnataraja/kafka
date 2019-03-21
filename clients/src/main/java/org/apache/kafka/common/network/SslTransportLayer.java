@@ -516,6 +516,9 @@ public class SslTransportLayer implements TransportLayer {
         if (appReadBuffer.position() > 0) {
             read = readFromAppBuffer(dst);
         }
+        
+        log.warn("Request to read into the destination buffer capacity {} limit {} position {}", 
+        		dst.capacity(), dst.limit(), dst.position());
 
         boolean readFromNetwork = false;
         boolean isClosed = false;
@@ -543,9 +546,11 @@ public class SslTransportLayer implements TransportLayer {
                 				appReadBuffer.position(), netReadBuffer.position(), netWriteBuffer.position());
                 		throw renegotiationException();
                 	}
+                	/*
             		if (retryBufferXFlow) {
             			break;
             		}
+            		*/
                 	if (unwrapResult.getStatus() == Status.OK) {
                 		break;
                 	}
@@ -555,9 +560,9 @@ public class SslTransportLayer implements TransportLayer {
                 		/* Our destination buffer that has to carry the unwrapped net read buffer has overflown
                 		 * We need to extend it and then unwrap again
                 		 */
-                		ByteBuffer newAppReadBuffer = Utils.ensureCapacity(appReadBuffer, appReadBuffer.position() + applicationBufferSize());
+                		ByteBuffer newAppReadBuffer = Utils.ensureCapacity(appReadBuffer, appReadBuffer.capacity() + applicationBufferSize());
                 		appReadBuffer.flip();
-                		newAppReadBuffer.put(appReadBuffer);
+                		//newAppReadBuffer.put(appReadBuffer);
                 		appReadBuffer = newAppReadBuffer;
                 		retryBufferXFlow = true;
                 	} else if (unwrapResult.getStatus() == Status.BUFFER_UNDERFLOW) {
@@ -569,7 +574,7 @@ public class SslTransportLayer implements TransportLayer {
                 		 */
                 	    int netSize = sslEngine.getSession().getPacketBufferSize();
                 	    if (netSize > appReadBuffer.capacity()) {
-                	    	ByteBuffer b = ByteBuffer.allocate(netSize + netReadBuffer.position());
+                	    	ByteBuffer b = ByteBuffer.allocate(netSize + netReadBuffer.capacity());
                 	    	netReadBuffer.flip();
                 	    	b.put(netReadBuffer);
                 	    	netReadBuffer = b;
