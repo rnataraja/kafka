@@ -531,49 +531,91 @@ public class SslTransportLayer implements TransportLayer {
 
             while (netReadBuffer.position() > 0) {
                 netReadBuffer.flip();
-                SSLEngineResult unwrapResult = sslEngine.unwrap(netReadBuffer, appReadBuffer);
-                netReadBuffer.compact();
-                // handle ssl renegotiation.
-                if (unwrapResult.getHandshakeStatus() != HandshakeStatus.NOT_HANDSHAKING && unwrapResult.getStatus() == Status.OK) {
-                    log.trace("Renegotiation requested, but it is not supported, channelId {}, " +
-                        "appReadBuffer pos {}, netReadBuffer pos {}, netWriteBuffer pos {}", channelId,
-                        appReadBuffer.position(), netReadBuffer.position(), netWriteBuffer.position());
-                    throw renegotiationException();
-                }
+                boolean retryBufferXFlow = false;
+                SSLEngineResult unwrapResult;
+                do {
+                	unwrapResult = sslEngine.unwrap(netReadBuffer, appReadBuffer);
+                	netReadBuffer.compact();
+                	// handle ssl renegotiation.
+                	if (unwrapResult.getHandshakeStatus() != HandshakeStatus.NOT_HANDSHAKING && unwrapResult.getStatus() == Status.OK) {
+                		log.trace("Renegotiation requested, but it is not supported, channelId {}, " +
+                				"appReadBuffer pos {}, netReadBuffer pos {}, netWriteBuffer pos {}", channelId,
+                				appReadBuffer.position(), netReadBuffer.position(), netWriteBuffer.position());
+                		throw renegotiationException();
+                	}
+            		if (retryBufferXFlow) {
+            			break;
+            		}
+                	if (unwrapResult.getStatus() == Status.OK) {
+                		break;
+                	}
+                	if (unwrapResult.getStatus() == Status.BUFFER_OVERFLOW) {
+                		log.warn("Buffer Overflow: Available Size is {} Buffer size is {} Retrying with expanded buffer", 
+                				appReadBuffer.position(), applicationBufferSize());
+                		/* Our destination buffer that has to carry the unwrapped net read buffer has overflown
+                		 * We need to extend it and then unwrap again
+                		 */
+                		ByteBuffer newAppReadBuffer = Utils.ensureCapacity(appReadBuffer, appReadBuffer.position() + applicationBufferSize());
+                		appReadBuffer.flip();
+                		newAppReadBuffer.put(appReadBuffer);
+                		appReadBuffer = newAppReadBuffer;
+                		retryBufferXFlow = true;
+                	} else if (unwrapResult.getStatus() == Status.BUFFER_UNDERFLOW) {
+                		log.warn("Buffer Underflow: Available Network size is {} Packet Buffer size is {} Retrying with expanded buffer", 
+                				netReadBuffer.position(), netReadBufferSize());
 
+                		/* We have a short read, essentially data cant be unwrapped with what has been read from the network
+                		 * read more data into netreadbuffer
+                		 */
+                	    int netSize = sslEngine.getSession().getPacketBufferSize();
+                	    if (netSize > appReadBuffer.capacity()) {
+                	    	ByteBuffer b = ByteBuffer.allocate(netSize + netReadBuffer.position());
+                	    	netReadBuffer.flip();
+                	    	b.put(netReadBuffer);
+                	    	netReadBuffer = b;
+                    		retryBufferXFlow = true;
+                    		// Read more data from the network
+                            netReadBuffer = Utils.ensureCapacity(netReadBuffer, netReadBufferSize());
+                            if (netReadBuffer.remaining() > 0) {
+                                netread = readFromSocketChannel();
+                            }
+                	    }
+                	}
+                } while(retryBufferXFlow);
+                
                 if (unwrapResult.getStatus() == Status.OK) {
-                    read += readFromAppBuffer(dst);
+                	read += readFromAppBuffer(dst);
                 } else if (unwrapResult.getStatus() == Status.BUFFER_OVERFLOW) {
-                    int currentApplicationBufferSize = applicationBufferSize();
-                    appReadBuffer = Utils.ensureCapacity(appReadBuffer, currentApplicationBufferSize);
-                    if (appReadBuffer.position() >= currentApplicationBufferSize) {
-                        throw new IllegalStateException("Buffer overflow when available data size (" + appReadBuffer.position() +
-                                                        ") >= application buffer size (" + currentApplicationBufferSize + ")");
-                    }
+                	int currentApplicationBufferSize = applicationBufferSize();
+                	appReadBuffer = Utils.ensureCapacity(appReadBuffer, currentApplicationBufferSize);
+                	if (appReadBuffer.position() > currentApplicationBufferSize) {
+                		throw new IllegalStateException("Buffer overflow when available data size (" + appReadBuffer.position() +
+                				") >= application buffer size (" + currentApplicationBufferSize + ")");
+                	}
 
-                    // appReadBuffer will extended upto currentApplicationBufferSize
-                    // we need to read the existing content into dst before we can do unwrap again. If there are no space in dst
-                    // we can break here.
-                    if (dst.hasRemaining())
-                        read += readFromAppBuffer(dst);
-                    else
-                        break;
+                	// appReadBuffer will extended upto currentApplicationBufferSize
+                	// we need to read the existing content into dst before we can do unwrap again. If there are no space in dst
+                	// we can break here.
+                	if (dst.hasRemaining())
+                		read += readFromAppBuffer(dst);
+                	else
+                		break;
                 } else if (unwrapResult.getStatus() == Status.BUFFER_UNDERFLOW) {
-                    int currentNetReadBufferSize = netReadBufferSize();
-                    netReadBuffer = Utils.ensureCapacity(netReadBuffer, currentNetReadBufferSize);
-                    if (netReadBuffer.position() >= currentNetReadBufferSize) {
-                        throw new IllegalStateException("Buffer underflow when available data size (" + netReadBuffer.position() +
-                                                        ") > packet buffer size (" + currentNetReadBufferSize + ")");
-                    }
-                    break;
+                	int currentNetReadBufferSize = netReadBufferSize();
+                	netReadBuffer = Utils.ensureCapacity(netReadBuffer, currentNetReadBufferSize);
+                	if (netReadBuffer.position() > currentNetReadBufferSize) {
+                		throw new IllegalStateException("Buffer underflow when available data size (" + netReadBuffer.position() +
+                				") > packet buffer size (" + currentNetReadBufferSize + ")");
+                	}
+                	break;
                 } else if (unwrapResult.getStatus() == Status.CLOSED) {
-                    // If data has been read and unwrapped, return the data. Close will be handled on the next poll.
-                    if (appReadBuffer.position() == 0 && read == 0)
-                        throw new EOFException();
-                    else {
-                        isClosed = true;
-                        break;
-                    }
+                	// If data has been read and unwrapped, return the data. Close will be handled on the next poll.
+                	if (appReadBuffer.position() == 0 && read == 0)
+                		throw new EOFException();
+                	else {
+                		isClosed = true;
+                		break;
+                	}
                 }
             }
             if (read == 0 && netread < 0)
