@@ -517,8 +517,8 @@ public class SslTransportLayer implements TransportLayer {
             read = readFromAppBuffer(dst);
         }
         
-        log.warn("Request to read into the destination buffer capacity {} limit {} position {}", 
-        		dst.capacity(), dst.limit(), dst.position());
+       //.warn("Request to read into the destination buffer capacity {} limit {} position {}", 
+       // 		dst.capacity(), dst.limit(), dst.position());
 
         boolean readFromNetwork = false;
         boolean isClosed = false;
@@ -560,31 +560,25 @@ public class SslTransportLayer implements TransportLayer {
                 		/* Our destination buffer that has to carry the unwrapped net read buffer has overflown
                 		 * We need to extend it and then unwrap again
                 		 */
-                		ByteBuffer newAppReadBuffer = Utils.ensureCapacity(appReadBuffer, appReadBuffer.capacity() + applicationBufferSize());
+                		ByteBuffer newAppReadBuffer = ByteBuffer.allocate(appReadBuffer.capacity() + applicationBufferSize());
+                				//Utils.ensureCapacity(appReadBuffer, appReadBuffer.capacity() + applicationBufferSize());
                 		appReadBuffer.flip();
-                		//newAppReadBuffer.put(appReadBuffer);
+                		newAppReadBuffer.put(appReadBuffer);
                 		appReadBuffer = newAppReadBuffer;
                 		retryBufferXFlow = true;
                 	} else if (unwrapResult.getStatus() == Status.BUFFER_UNDERFLOW) {
                 		log.warn("Buffer Underflow: Available Network size is {} Packet Buffer size is {} Retrying with expanded buffer", 
                 				netReadBuffer.position(), netReadBufferSize());
 
-                		/* We have a short read, essentially data cant be unwrapped with what has been read from the network
-                		 * read more data into netreadbuffer
-                		 */
                 	    int netSize = sslEngine.getSession().getPacketBufferSize();
                 	    if (netSize > appReadBuffer.capacity()) {
-                	    	ByteBuffer b = ByteBuffer.allocate(netSize + netReadBuffer.capacity());
+                	    	ByteBuffer b = ByteBuffer.allocate(netSize);
                 	    	netReadBuffer.flip();
                 	    	b.put(netReadBuffer);
                 	    	netReadBuffer = b;
-                    		retryBufferXFlow = true;
-                    		// Read more data from the network
-                            netReadBuffer = Utils.ensureCapacity(netReadBuffer, netReadBufferSize());
-                            if (netReadBuffer.remaining() > 0) {
-                                netread = readFromSocketChannel();
-                            }
+                	    	netReadBuffer.flip();
                 	    }
+                	    break;
                 	}
                 } while(retryBufferXFlow);
                 
@@ -605,7 +599,7 @@ public class SslTransportLayer implements TransportLayer {
                 		read += readFromAppBuffer(dst);
                 	else
                 		break;
-                } else if (unwrapResult.getStatus() == Status.BUFFER_UNDERFLOW) {
+                } /* else if (unwrapResult.getStatus() == Status.BUFFER_UNDERFLOW) {
                 	int currentNetReadBufferSize = netReadBufferSize();
                 	netReadBuffer = Utils.ensureCapacity(netReadBuffer, currentNetReadBufferSize);
                 	if (netReadBuffer.position() > currentNetReadBufferSize) {
@@ -613,7 +607,7 @@ public class SslTransportLayer implements TransportLayer {
                 				") > packet buffer size (" + currentNetReadBufferSize + ")");
                 	}
                 	break;
-                } else if (unwrapResult.getStatus() == Status.CLOSED) {
+                } */ else if (unwrapResult.getStatus() == Status.CLOSED) {
                 	// If data has been read and unwrapped, return the data. Close will be handled on the next poll.
                 	if (appReadBuffer.position() == 0 && read == 0)
                 		throw new EOFException();
