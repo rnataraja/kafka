@@ -60,6 +60,8 @@ public class SslTransportLayer implements TransportLayer {
     private final SocketChannel socketChannel;
     private final Logger log;
 
+    private boolean bufferUnderflowed = false;
+
     private HandshakeStatus handshakeStatus;
     private SSLEngineResult handshakeResult;
     private State state;
@@ -525,11 +527,19 @@ public class SslTransportLayer implements TransportLayer {
         // Each loop reads at most once from the socket.
         while (dst.remaining() > 0) {
             int netread = 0;
+            if (bufferUnderflowed) {
+               log.warn("PreRead: Channel {} Coming back from an underflow state, Position {} Capacity {}", 
+ 			channelId, netReadBuffer.position(), netReadBuffer.capacity());
+            }
             netReadBuffer = Utils.ensureCapacity(netReadBuffer, netReadBufferSize());
             if (netReadBuffer.remaining() > 0) {
                 netread = readFromSocketChannel();
                 if (netread > 0)
                     readFromNetwork = true;
+            }
+            if (bufferUnderflowed) {
+               log.warn("PostRead: Channel {} Coming back from an underflow state, Netread {} Position {} Capacity {}", 
+ 			channelId, netread, netReadBuffer.position(), netReadBuffer.capacity());
             }
 
             while (netReadBuffer.position() > 0) {
@@ -552,9 +562,17 @@ public class SslTransportLayer implements TransportLayer {
             		}
             		*/
                 	if (unwrapResult.getStatus() == Status.OK) {
+				if (bufferUnderflowed) {
+                                    log.warn("Recovered from an underflowed scenario Channel {}" , channelId);
+				}
+				bufferUnderflowed = false;
                 		break;
                 	}
                 	if (unwrapResult.getStatus() == Status.BUFFER_OVERFLOW) {
+				if (bufferUnderflowed) {
+                                    log.warn("Went from underflowed to overflowed Channel {}" , channelId);
+				}
+				bufferUnderflowed = false;
                 		log.warn("Buffer Overflow: Available Size is {} Buffer size is {} Retrying with expanded buffer", 
                 				appReadBuffer.position(), applicationBufferSize());
                 		/* Our destination buffer that has to carry the unwrapped net read buffer has overflown
@@ -567,18 +585,20 @@ public class SslTransportLayer implements TransportLayer {
                 		appReadBuffer = newAppReadBuffer;
                 		retryBufferXFlow = true;
                 	} else if (unwrapResult.getStatus() == Status.BUFFER_UNDERFLOW) {
-                		log.warn("Buffer Underflow: Available Network size is {} Packet Buffer size is {} Retrying with expanded buffer", 
-                				netReadBuffer.position(), netReadBufferSize());
-
                 	    int netSize = sslEngine.getSession().getPacketBufferSize();
+                	    log.warn("Buffer Underflow: App Size {} Available Network size is {} Packet Buffer size is {}, Retry if needed", 
+                		      appReadBuffer.capacity(), netReadBuffer.position(), netReadBufferSize());
+
                 	    if (netSize > appReadBuffer.capacity()) {
                 	    	ByteBuffer b = ByteBuffer.allocate(netSize);
                 	    	netReadBuffer.flip();
                 	    	b.put(netReadBuffer);
                 	    	netReadBuffer = b;
                 	    	netReadBuffer.flip();
-                	    }
-                	    break;
+                	    } else {
+                		retryBufferXFlow = false;
+				break;
+			    }
                 	}
                 } while(retryBufferXFlow);
                 
@@ -599,15 +619,19 @@ public class SslTransportLayer implements TransportLayer {
                 		read += readFromAppBuffer(dst);
                 	else
                 		break;
-                } /* else if (unwrapResult.getStatus() == Status.BUFFER_UNDERFLOW) {
+                } else if (unwrapResult.getStatus() == Status.BUFFER_UNDERFLOW) {
                 	int currentNetReadBufferSize = netReadBufferSize();
                 	netReadBuffer = Utils.ensureCapacity(netReadBuffer, currentNetReadBufferSize);
                 	if (netReadBuffer.position() > currentNetReadBufferSize) {
                 		throw new IllegalStateException("Buffer underflow when available data size (" + netReadBuffer.position() +
                 				") > packet buffer size (" + currentNetReadBufferSize + ")");
                 	}
+                	if (dst.hasRemaining())
+                		read += readFromAppBuffer(dst);
+                	else
+                		break;
                 	break;
-                } */ else if (unwrapResult.getStatus() == Status.CLOSED) {
+                } else if (unwrapResult.getStatus() == Status.CLOSED) {
                 	// If data has been read and unwrapped, return the data. Close will be handled on the next poll.
                 	if (appReadBuffer.position() == 0 && read == 0)
                 		throw new EOFException();
